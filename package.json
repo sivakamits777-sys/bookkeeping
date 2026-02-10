@@ -1,0 +1,43 @@
+{
+  "name": "tmp-next",
+  "version": "0.1.0",
+  "private": true,
+  "scripts": {
+    "dev": "next dev",
+    "build": "next build",
+    "start": "next start",
+    "lint": "eslint"
+  },
+  "dependencies": {
+    "@google-cloud/vertexai": "^1.10.0",
+    "@google/adk": "^0.3.0",
+    "@tailwindcss/typography": "^0.5.19",
+    "dotenv": "^17.2.3",
+    "exceljs": "^4.4.0",
+    "firebase-admin": "^13.6.0",
+    "googleapis": "^171.1.0",
+    "jspdf": "^4.0.0",
+    "lucide-react": "^0.562.0",
+    "mammoth": "^1.11.0",
+    "next": "16.1.4",
+    "node-fetch": "^3.3.2",
+    "nodemailer": "^7.0.13",
+    "react": "19.2.3",
+    "react-dom": "19.2.3",
+    "react-markdown": "^10.1.0",
+    "remark-gfm": "^4.0.1",
+    "xlsx": "^0.18.5",
+    "zod": "^4.3.6"
+  },
+  "devDependencies": {
+    "@tailwindcss/postcss": "^4",
+    "@types/node": "^20",
+    "@types/nodemailer": "^7.0.9",
+    "@types/react": "^19",
+    "@types/react-dom": "^19",
+    "eslint": "^9",
+    "eslint-config-next": "16.1.4",
+    "tailwindcss": "^4",
+    "typescript": "5.9.3"
+  }
+}

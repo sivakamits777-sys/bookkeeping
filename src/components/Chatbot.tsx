@@ -1,0 +1,581 @@
+import React, { useState, useRef, useEffect } from 'react';
+import { MessageSquare, Send, X, Minimize2, Maximize2, Loader2, Bot, User, Trash2, Sparkles, Clock } from 'lucide-react';
+import ReactMarkdown from 'react-markdown';
+import remarkGfm from 'remark-gfm';
+import { AppUser } from '../types';
+
+interface Message {
+    role: 'user' | 'model';
+    parts: { text: string }[];
+}
+
+const INITIAL_SUGGESTIONS = [
+    "How do I classify a product?",
+    "What are the available tax codes?",
+    "Tell me about the admin dashboard",
+    "How do I add new categories?"
+];
+
+const MessageBubble: React.FC<{ msg: Message, darkMode: boolean }> = ({ msg, darkMode }) => (
+    <div className={`flex ${msg.role === 'user' ? 'justify-end' : 'justify-start'}`}>
+        <div className={`flex gap-3 max-w-[85%] ${msg.role === 'user' ? 'flex-row-reverse' : ''}`}>
+            <div className={`w-8 h-8 rounded-full flex items-center justify-center shrink-0 ${msg.role === 'user'
+                ? (darkMode ? 'bg-indigo-500/20 text-indigo-400' : 'bg-indigo-100 text-indigo-600')
+                : (darkMode ? 'bg-purple-500/20 text-purple-400' : 'bg-purple-100 text-purple-600')
+                }`}>
+                {msg.role === 'user' ? <User className="w-4 h-4" /> : <Bot className="w-4 h-4" />}
+            </div>
+            <div className={`p-3 rounded-2xl text-sm leading-relaxed shadow-sm break-words overflow-hidden ${msg.role === 'user'
+                ? (darkMode ? 'bg-indigo-800 text-white' : 'bg-indigo-800 text-white')
+                : (darkMode ? 'bg-white/5 text-indigo-50 border border-white/10' : 'bg-white text-slate-700 border border-gray-100')
+                }`}>
+                {msg.role === 'user' ? (
+                    msg.parts[0].text
+                ) : (
+                    <div className="prose prose-sm dark:prose-invert max-w-none">
+                        <ReactMarkdown remarkPlugins={[remarkGfm]}>
+                            {msg.parts[0].text.split('[SUGGESTIONS]')[0].trim()}
+                        </ReactMarkdown>
+                    </div>
+                )}
+            </div>
+        </div>
+    </div>
+);
+
+const LoadingBubble: React.FC<{ darkMode: boolean }> = ({ darkMode }) => (
+    <div className="flex justify-start">
+        <div className="flex gap-3 max-w-[85%]">
+            <div className={`w-8 h-8 rounded-full flex items-center justify-center shrink-0 ${darkMode ? 'bg-purple-500/20 text-purple-400' : 'bg-purple-100 text-purple-600'
+                }`}>
+                <Bot className="w-4 h-4" />
+            </div>
+            <div className={`p-4 rounded-2xl flex items-center gap-2 ${darkMode ? 'bg-white/5 border border-white/10 text-indigo-50/50' : 'bg-white border border-gray-100 text-slate-400 shadow-sm'
+                }`}>
+                <Loader2 className="w-4 h-4 animate-spin" />
+                <span className="text-xs">Consulting knowledge base...</span>
+            </div>
+        </div>
+    </div>
+);
+
+const Chatbot: React.FC<{ darkMode: boolean, user: AppUser | null }> = ({ darkMode, user }) => {
+    const [isOpen, setIsOpen] = useState(false);
+    const [isFullScreen, setIsFullScreen] = useState(false);
+    const [activeTab, setActiveTab] = useState<'chat' | 'history'>('chat');
+    const [input, setInput] = useState('');
+    const [messages, setMessages] = useState<Message[]>([]);
+    const [historySessions, setHistorySessions] = useState<any[]>([]);
+    const [currentChatId, setCurrentChatId] = useState<number | null>(null);
+    const [isLoading, setIsLoading] = useState(false);
+    const [isHistoryLoading, setIsHistoryLoading] = useState(false);
+    const [suggestedQuestions, setSuggestedQuestions] = useState<string[]>(INITIAL_SUGGESTIONS);
+    const [deleteModalOpen, setDeleteModalOpen] = useState(false);
+    const [sessionToDelete, setSessionToDelete] = useState<number | null>(null);
+    const [isSessionExpired, setIsSessionExpired] = useState(false);
+    const messagesEndRef = useRef<HTMLDivElement>(null);
+
+    const scrollToBottom = () => {
+        messagesEndRef.current?.scrollIntoView({ behavior: "smooth" });
+    };
+
+    useEffect(() => {
+        if (isOpen && activeTab === 'chat') {
+            scrollToBottom();
+        }
+    }, [messages, isOpen, activeTab]);
+
+    const fetchSessions = async () => {
+        if (!user) return;
+        setIsHistoryLoading(true);
+        try {
+            const res = await fetch(`/api/chat/sessions?userId=${user.id}`);
+            if (res.ok) {
+                const data = await res.json();
+                setHistorySessions(data);
+            }
+        } catch (error) {
+            console.error("Failed to fetch sessions:", error);
+        } finally {
+            setIsHistoryLoading(false);
+        }
+    };
+
+    useEffect(() => {
+        if (isOpen && activeTab === 'history') {
+            fetchSessions();
+        }
+    }, [isOpen, activeTab]);
+
+    const loadSession = async (sessionId: number) => {
+        setIsLoading(true);
+        setActiveTab('chat');
+        setCurrentChatId(sessionId);
+        try {
+            const res = await fetch(`/api/chat/history?chatId=${sessionId}`);
+            if (res.ok) {
+                const data: any[] = await res.json();
+
+                // Set expiration state based on session info
+                const sessionInfo = historySessions.find(s => s.id === sessionId);
+                if (sessionInfo) {
+                    setIsSessionExpired(sessionInfo.is_expired);
+                }
+
+                // Strip suggestions from all messages for display
+                data.forEach(m => {
+                    if (m.role === 'model') {
+                        const text = m.parts[0].text;
+                        const suggestionMatch = text.match(/\[SUGGESTIONS\]([\s\S]*?)\[\/SUGGESTIONS\]/);
+                        if (suggestionMatch) {
+                            // Extract suggestions for the last message if needed
+                            if (m === data[data.length - 1]) {
+                                const suggestions = suggestionMatch[1].split('|').map((s: string) => s.trim()).filter(Boolean);
+                                setSuggestedQuestions(suggestions);
+                            }
+                            m.parts[0].text = text.split('[SUGGESTIONS]')[0].trim();
+                        }
+                    }
+                });
+
+                // Extra check for the very last message in case suggestions weren't closed but we want to show them
+                const lastMsg = data[data.length - 1];
+                if (lastMsg && lastMsg.role === 'model' && !lastMsg.parts[0].text.includes('[SUGGESTIONS]')) {
+                    const originalText = data[data.length - 1].parts[0].text;
+                    const openMatch = originalText.match(/\[SUGGESTIONS\]([\s\S]*?)$/);
+                    if (openMatch && !originalText.includes('[/SUGGESTIONS]')) {
+                        const suggestions = openMatch[1].split('|').map((s: string) => s.trim()).filter(Boolean);
+                        setSuggestedQuestions(suggestions);
+                        lastMsg.parts[0].text = originalText.split('[SUGGESTIONS]')[0].trim();
+                    }
+                }
+
+                setMessages(data);
+            }
+        } catch (error) {
+            console.error("Failed to load session:", error);
+        } finally {
+            setIsLoading(false);
+        }
+    };
+
+    const startNewChat = () => {
+        setMessages([]);
+        setCurrentChatId(null);
+        setActiveTab('chat');
+        setSuggestedQuestions(INITIAL_SUGGESTIONS);
+        setIsSessionExpired(false);
+    };
+
+    const handleDeleteSession = async (e: React.MouseEvent, sessionId: number) => {
+        e.stopPropagation();
+        setSessionToDelete(sessionId);
+        setDeleteModalOpen(true);
+    };
+
+    const confirmDeleteSession = async () => {
+        if (!sessionToDelete) return;
+
+        try {
+            const res = await fetch(`/api/chat/sessions?chatId=${sessionToDelete}`, {
+                method: 'DELETE'
+            });
+            if (res.ok) {
+                setHistorySessions(prev => prev.filter(s => s.id !== sessionToDelete));
+                if (currentChatId === sessionToDelete) {
+                    startNewChat();
+                }
+            } else {
+                throw new Error("Failed to delete session");
+            }
+        } catch (error) {
+            console.error("Delete Error:", error);
+            alert("Failed to delete chat session.");
+        } finally {
+            setDeleteModalOpen(false);
+            setSessionToDelete(null);
+        }
+    };
+
+    const handleSend = async (e?: React.FormEvent, overrideInput?: string) => {
+        if (e) e.preventDefault();
+        const messageText = overrideInput || input;
+        if (!messageText.trim() || isLoading || isSessionExpired) return;
+
+        const userMessage: Message = { role: 'user', parts: [{ text: messageText }] };
+        setMessages(prev => [...prev, userMessage]);
+        setInput('');
+        setIsLoading(true);
+        setSuggestedQuestions([]);
+
+        try {
+            const res = await fetch('/api/chat', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({
+                    message: messageText,
+                    history: messages.slice(-10),
+                    userId: user?.id,
+                    chatId: currentChatId
+                })
+            });
+
+            if (!res.ok) {
+                const data = await res.json();
+                if (data.isExpired) {
+                    setIsSessionExpired(true);
+                    return; // Stop here, don't throw and don't add error bubble
+                }
+                throw new Error(data.error || 'Failed to get response');
+            }
+
+            // Get chatId from header if newly created
+            const newChatId = res.headers.get('X-Chat-Id');
+            if (newChatId) {
+                setCurrentChatId(parseInt(newChatId));
+            }
+
+            const reader = res.body?.getReader();
+            const decoder = new TextDecoder();
+            if (!reader) throw new Error('No reader found');
+
+            let isFirstChunk = true;
+            let fullResponse = '';
+
+            while (true) {
+                const { done, value } = await reader.read();
+                if (done) break;
+
+                const chunk = decoder.decode(value, { stream: true });
+                fullResponse += chunk;
+
+                let displayResponse = fullResponse;
+                const suggestionMatch = fullResponse.match(/\[SUGGESTIONS\]([\s\S]*?)$/);
+                if (suggestionMatch) {
+                    displayResponse = fullResponse.split('[SUGGESTIONS]')[0].trim();
+                }
+
+                if (isFirstChunk) {
+                    setIsLoading(false);
+                    setMessages(prev => [...prev, { role: 'model', parts: [{ text: displayResponse }] }]);
+                    isFirstChunk = false;
+                } else {
+                    setMessages(prev => {
+                        const newMessages = [...prev];
+                        const lastMessage = newMessages[newMessages.length - 1];
+                        if (lastMessage && lastMessage.role === 'model') {
+                            lastMessage.parts[0].text = displayResponse;
+                        }
+                        return newMessages;
+                    });
+                }
+
+                const fullSuggestionMatch = fullResponse.match(/\[SUGGESTIONS\]([\s\S]*?)\[\/SUGGESTIONS\]/);
+                if (fullSuggestionMatch) {
+                    const extracted = fullSuggestionMatch[1].split('|').map(s => s.trim()).filter(Boolean);
+                    setSuggestedQuestions(extracted);
+                }
+            }
+        } catch (error: any) {
+            console.error("Chat Error:", error);
+            setIsLoading(false);
+            setMessages(prev => [...prev, { role: 'model', parts: [{ text: `Error: ${error.message}` }] }]);
+        } finally {
+            setIsLoading(false);
+        }
+    };
+
+    const clearCurrentChat = () => {
+        setMessages([]);
+        setSuggestedQuestions(INITIAL_SUGGESTIONS);
+    };
+
+    if (!isOpen) {
+        return (
+            <button
+                onClick={() => setIsOpen(true)}
+                className={`fixed bottom-6 right-6 p-4 rounded-full shadow-2xl transition-all duration-300 hover:scale-110 z-[80] group bg-gradient-to-br from-indigo-600 to-purple-600 text-white shadow-indigo-500/40 border border-white/20`}
+            >
+                <div className="absolute inset-0 rounded-full bg-white opacity-0 group-hover:opacity-10 transition-opacity duration-300"></div>
+                <MessageSquare className="w-6 h-6" />
+                <span className="absolute right-full mr-3 top-1/2 -translate-y-1/2 px-3 py-1 rounded-lg text-xs font-semibold whitespace-nowrap opacity-0 group-hover:opacity-100 transition-opacity duration-300 bg-slate-800 text-white">
+                    Knowledge Assistant
+                </span>
+            </button>
+        );
+    }
+
+    return (
+        <>
+            {/* Deletion Confirmation Modal */}
+            {deleteModalOpen && (
+                <div className="fixed inset-0 z-[150] flex items-center justify-center bg-black/50 backdrop-blur-sm animate-in fade-in duration-200">
+                    <div className={`relative w-full max-w-md mx-4 p-6 rounded-2xl shadow-2xl animate-in zoom-in-95 duration-200 ${darkMode ? 'bg-slate-900 border border-white/10' : 'bg-white'
+                        }`}>
+                        <div className="flex items-start gap-4">
+                            <div className={`p-3 rounded-full ${darkMode ? 'bg-red-500/10' : 'bg-red-50'}`}>
+                                <Trash2 className="w-6 h-6 text-red-500" />
+                            </div>
+                            <div className="flex-1">
+                                <h3 className={`text-lg font-bold mb-2 ${darkMode ? 'text-white' : 'text-slate-900'}`}>
+                                    Delete Chat Session?
+                                </h3>
+                                <p className={`text-sm ${darkMode ? 'text-white/60' : 'text-slate-600'}`}>
+                                    This will permanently delete this conversation and all its messages. This action cannot be undone.
+                                </p>
+                            </div>
+                        </div>
+                        <div className="flex gap-3 mt-6">
+                            <button
+                                onClick={() => {
+                                    setDeleteModalOpen(false);
+                                    setSessionToDelete(null);
+                                }}
+                                className={`flex-1 px-4 py-2.5 rounded-xl font-medium text-sm transition-all ${darkMode
+                                    ? 'bg-white/5 hover:bg-white/10 text-white border border-white/10'
+                                    : 'bg-gray-100 hover:bg-gray-200 text-slate-700'
+                                    }`}
+                            >
+                                Cancel
+                            </button>
+                            <button
+                                onClick={confirmDeleteSession}
+                                className="flex-1 px-4 py-2.5 rounded-xl font-medium text-sm bg-red-500 hover:bg-red-600 text-white transition-all shadow-lg shadow-red-500/20"
+                            >
+                                Delete
+                            </button>
+                        </div>
+                    </div>
+                </div>
+            )}
+
+            <div className={`fixed z-[100] transition-all duration-500 flex flex-col shadow-2xl overflow-hidden ${isFullScreen
+                ? 'inset-0 w-full h-full rounded-none'
+                : 'bottom-6 right-6 w-[400px] h-[600px] rounded-2xl max-w-[calc(100vw-3rem)] max-h-[calc(100vh-3rem)]'
+                } ${darkMode ? 'bg-[#15161d] border border-white/10' : 'bg-white border border-gray-200'}`}>
+
+                {/* Header */}
+                <div className={`flex items-center justify-between px-4 py-3 border-b transition-colors duration-300 ${darkMode ? 'bg-white/5 border-white/10' : 'bg-gradient-to-r from-indigo-600 to-purple-600 text-white border-transparent'
+                    }`}>
+                    <div className="flex items-center gap-2">
+                        <div className={`p-1.5 rounded-lg ${darkMode ? 'bg-indigo-500/20 text-indigo-400' : 'bg-white/20 text-white'}`}>
+                            <Bot className="w-5 h-5" />
+                        </div>
+                        <div>
+                            <h3 className="font-bold text-sm">Knowledge Assistant</h3>
+                        </div>
+                    </div>
+                    <div className="flex items-center gap-1 text-inherit">
+                        <button onClick={startNewChat} className="p-1.5 rounded-lg hover:bg-white/10 transition-colors" title="Start new chat">
+                            <MessageSquare className="w-4 h-4" />
+                        </button>
+                        <button onClick={clearCurrentChat} className="p-1.5 rounded-lg hover:bg-white/10 transition-colors" title="Clear current chat">
+                            <Trash2 className="w-4 h-4" />
+                        </button>
+                        <button onClick={() => setIsFullScreen(!isFullScreen)} className="p-1.5 rounded-lg hover:bg-white/10 transition-colors" title={isFullScreen ? "Exit Full Screen" : "Full Screen"}>
+                            {isFullScreen ? <Minimize2 className="w-4 h-4" /> : <Maximize2 className="w-4 h-4" />}
+                        </button>
+                        <button onClick={() => { setIsOpen(false); setIsFullScreen(false); }} className="p-1.5 rounded-lg hover:bg-white/10 transition-colors">
+                            <X className="w-4 h-4" />
+                        </button>
+                    </div>
+                </div>
+
+                {/* Tabs */}
+                <div className={`flex border-b ${darkMode ? 'border-white/10' : 'border-gray-100'}`}>
+                    <button
+                        onClick={() => setActiveTab('chat')}
+                        className={`flex-1 flex items-center justify-center gap-2 py-2.5 text-xs font-bold transition-all border-b-2 ${activeTab === 'chat'
+                            ? (darkMode ? 'text-indigo-400 border-indigo-400 bg-white/5' : 'text-indigo-800 border-indigo-800 bg-gray-50')
+                            : (darkMode ? 'text-white/40 border-transparent hover:text-white/60 hover:bg-white/5' : 'text-slate-400 border-transparent hover:text-slate-600 hover:bg-gray-50')
+                            }`}
+                    >
+                        <MessageSquare className="w-3.5 h-3.5" />
+                        Chat
+                    </button>
+                    <button
+                        onClick={() => setActiveTab('history')}
+                        className={`flex-1 flex items-center justify-center gap-2 py-2.5 text-xs font-bold transition-all border-b-2 ${activeTab === 'history'
+                            ? (darkMode ? 'text-indigo-400 border-indigo-400 bg-white/5' : 'text-indigo-800 border-indigo-800 bg-gray-50')
+                            : (darkMode ? 'text-white/40 border-transparent hover:text-white/60 hover:bg-white/5' : 'text-slate-400 border-transparent hover:text-slate-600 hover:bg-gray-50')
+                            }`}
+                    >
+                        <Clock className="w-3.5 h-3.5" />
+                        History
+                    </button>
+                </div>
+
+                {/* Chat Content */}
+                <div className={`flex-1 p-4 flex flex-col gap-4 custom-scrollbar ${(activeTab === 'chat' && messages.length > 0) || (activeTab === 'history' && historySessions.length > 0) ? 'overflow-y-auto' : 'overflow-hidden'
+                    } ${darkMode ? 'bg-[#0f1016]' : 'bg-gray-50'}`}>
+
+                    {activeTab === 'chat' ? (
+                        <>
+                            {messages.length === 0 ? (
+                                <div className="flex-1 flex flex-col items-center justify-center text-center opacity-40">
+                                    <Bot className="w-12 h-12 mb-2" />
+                                    <p className="text-sm px-8 max-w-sm">Hi! Ask me anything about the tax classification policies or guidelines in your Knowledge Base.</p>
+                                </div>
+                            ) : (
+                                messages.map((msg, i) => (
+                                    <MessageBubble key={i} msg={msg} darkMode={darkMode} />
+                                ))
+                            )}
+                            {isLoading && <LoadingBubble darkMode={darkMode} />}
+                            {isSessionExpired && (
+                                <div className={`p-4 rounded-xl border text-center animate-in fade-in zoom-in-95 duration-500 shadow-lg mx-12 my-2 bg-[#1a0f0f] border-red-900/30`}>
+                                    <div className="flex flex-col items-center gap-1.5">
+                                        <h3 className="text-sm font-bold text-[#ff4d4d]">Session Expired</h3>
+                                        <p className="text-[10px] leading-tight text-zinc-400 max-w-[200px]">
+                                            This session has been inactive for over an hour and is now closed. Please start a new chat to continue.
+                                        </p>
+                                        <button
+                                            onClick={startNewChat}
+                                            className="mt-1 px-4 py-1.5 rounded-lg text-[10px] font-bold bg-[#4a1515] hover:bg-[#5a1a1a] text-white transition-all active:scale-95"
+                                        >
+                                            Start New Chat
+                                        </button>
+                                    </div>
+                                </div>
+                            )}
+                            {suggestedQuestions.length > 0 && !isLoading && !isSessionExpired && (
+                                <div className="flex flex-wrap gap-2 pt-2 animate-in fade-in slide-in-from-bottom-2 duration-300">
+                                    <div className="flex items-center gap-1.5 w-full mb-1 opacity-60">
+                                        <Sparkles className="w-3 h-3 text-indigo-400" />
+                                        <span className="text-[10px] font-bold uppercase tracking-wider">Suggestions</span>
+                                    </div>
+                                    {suggestedQuestions.map((q, idx) => (
+                                        <button
+                                            key={idx}
+                                            onClick={() => handleSend(undefined, q)}
+                                            className={`px-3 py-1.5 rounded-full text-xs font-medium transition-all ${darkMode
+                                                ? 'bg-white/5 hover:bg-white/10 border border-white/10 text-indigo-300'
+                                                : 'bg-white hover:bg-gray-50 border border-gray-200 text-indigo-600 shadow-sm'
+                                                }`}
+                                        >
+                                            {q}
+                                        </button>
+                                    ))}
+                                </div>
+                            )}
+                        </>
+                    ) : (
+                        <>
+                            {isHistoryLoading ? (
+                                <div className="flex-1 flex flex-col items-center justify-center text-center opacity-40">
+                                    <Loader2 className="w-8 h-8 mb-2 animate-spin" />
+                                    <p className="text-sm">Loading chat history...</p>
+                                </div>
+                            ) : historySessions.length === 0 ? (
+                                <div className="flex-1 flex flex-col items-center justify-center text-center opacity-40">
+                                    <Clock className="w-12 h-12 mb-2" />
+                                    <p className="text-sm px-8 max-w-sm">No previous conversations found.</p>
+                                </div>
+                            ) : (
+                                <div className="flex flex-col gap-2">
+                                    {historySessions.map((session: any) => (
+                                        <div
+                                            key={session.id}
+                                            onClick={() => loadSession(session.id)}
+                                            className={`w-full text-left p-4 rounded-xl border transition-all flex items-center gap-4 group cursor-pointer ${darkMode
+                                                ? 'bg-white/5 border-white/10 hover:bg-white/10 hover:border-indigo-500/50'
+                                                : 'bg-white border-gray-100 hover:border-indigo-300 hover:shadow-md'
+                                                }`}
+                                        >
+                                            <div className={`p-2 rounded-lg shrink-0 ${darkMode ? 'bg-indigo-500/20 text-indigo-400' : 'bg-indigo-50 text-indigo-600'}`}>
+                                                <MessageSquare className="w-4 h-4" />
+                                            </div>
+                                            <div className="flex-1 min-w-0">
+                                                <div className={`text-sm font-bold truncate ${darkMode ? 'text-white' : 'text-slate-900'}`}>
+                                                    {session.title || 'New Chat'}
+                                                </div>
+                                                <div className={`text-[10px] mt-0.5 opacity-50 font-medium`}>
+                                                    {new Date(session.created_at).toLocaleDateString([], { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' })}
+                                                </div>
+                                            </div>
+                                            <button
+                                                onClick={(e) => handleDeleteSession(e, session.id)}
+                                                className={`p-2 rounded-lg transition-all opacity-0 group-hover:opacity-100 hover:bg-red-500/10 hover:text-red-500 ${darkMode ? 'text-white/40' : 'text-slate-400'}`}
+                                                title="Delete session"
+                                            >
+                                                <Trash2 className="w-4 h-4" />
+                                            </button>
+                                            <Minimize2 className="w-4 h-4 opacity-0 group-hover:opacity-40 transition-opacity" />
+                                        </div>
+                                    ))}
+                                </div>
+                            )}
+                        </>
+                    )}
+                    <div ref={messagesEndRef} />
+                </div>
+
+                {/* Footer - Only show for CHAT tab */}
+                {activeTab === 'chat' && (
+                    <div className={`p-4 border-t ${darkMode ? 'bg-white/5 border-white/10' : 'bg-white border-gray-100'}`}>
+                        <form onSubmit={(e) => handleSend(e)} className={`flex gap-2 ${isFullScreen ? 'max-w-4xl mx-auto' : ''}`}>
+                            <input
+                                type="text"
+                                value={input}
+                                onChange={(e) => setInput(e.target.value)}
+                                placeholder="Type your question..."
+                                className={`flex-1 px-4 py-2 rounded-xl text-sm focus:outline-none focus:ring-2 focus:ring-indigo-500/50 transition-all ${darkMode ? 'bg-white/5 border border-white/10 text-white placeholder:text-white/20' : 'bg-gray-100 border border-transparent'
+                                    }`}
+                                disabled={isLoading || isSessionExpired}
+                            />
+                            <button
+                                type="submit"
+                                disabled={isLoading || !input.trim() || isSessionExpired}
+                                className={`p-2 rounded-xl transition-all duration-300 ${isLoading || !input.trim() || isSessionExpired
+                                    ? (darkMode ? 'bg-white/5 text-white/20' : 'bg-gray-100 text-slate-300')
+                                    : 'bg-gradient-to-r from-indigo-600 to-purple-600 text-white shadow-lg shadow-indigo-600/20 hover:scale-105 active:scale-95'
+                                    }`}
+                            >
+                                <Send className="w-4 h-4" />
+                            </button>
+                        </form>
+                    </div>
+                )}
+
+                <style jsx>{`
+                .custom-scrollbar::-webkit-scrollbar {
+                    width: 4px;
+                }
+                .custom-scrollbar::-webkit-scrollbar-track {
+                    background: transparent;
+                }
+                .custom-scrollbar::-webkit-scrollbar-thumb {
+                    background: ${darkMode ? 'rgba(255,255,255,0.1)' : 'rgba(0,0,0,0.1)'};
+                    border-radius: 10px;
+                }
+                :deep(.prose) {
+                    color: inherit;
+                }
+                :deep(.prose p) {
+                    margin-top: 0.5rem;
+                    margin-bottom: 0.5rem;
+                }
+                :deep(.prose p:first-child) {
+                    margin-top: 0;
+                }
+                :deep(.prose p:last-child) {
+                    margin-bottom: 0;
+                }
+                :deep(.prose ul, .prose ol) {
+                    margin-top: 0.5rem;
+                    margin-bottom: 0.5rem;
+                    padding-left: 1.25rem;
+                }
+                :deep(.prose li) {
+                    margin-top: 0.25rem;
+                    margin-bottom: 0.25rem;
+                }
+                }`}</style>
+            </div>
+        </>
+    );
+};
+
+
+
+export default Chatbot;
